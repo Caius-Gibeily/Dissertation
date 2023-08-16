@@ -1,0 +1,500 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import pandas as pd
+import numpy as np
+import os, glob
+import matplotlib.pyplot as plt
+from sklearn.manifold import TSNE
+import natsort
+import math
+os.chdir("/home/caiusgibeily/Documents/Oxdrive/Project_2/Expression_and_antibodies_data/Databases/Dopaminergic/")
+### Analysis of large dataset ###
+full = pd.read_csv("cpmTable.tsv",sep="\t")
+
+def get_mean_line(full):
+    full2 = full.iloc[:,1:]
+    averaged = np.zeros((len(full2),3)).astype('object')
+    ses = averaged.copy()
+    for i in range(3):
+        averaged[:,i] = np.average(full2.iloc[:,i::3],axis=1).astype('object')
+        ses[:,i] = np.std(full2.iloc[:,i::3],axis=1)/math.sqrt(full2.shape[1]//3)
+    averaged = np.insert(averaged,0,np.array(full.iloc[:,0]),axis=1)
+    ses = np.insert(ses,0,np.array(full.iloc[:,0]),axis=1)
+    return averaged, ses
+averaged,ses = get_mean_line(full)
+
+## Divide genes into differential patterns of expression
+# TSNE
+##
+
+model = TSNE(full2)
+fitted = model.fit_transform(full2)
+plt.plot(fitted[:,0],fitted[:,1])
+## Subset table into neurotransmitter families and subgroups 
+# DA
+## DRD*
+genes_DA = "DRD"
+genes_ACH = "CHRN"
+genes_mACH = "CHRM"
+genes_OP = "OPR"
+genes_DARP = ""
+def subset_database(gene_stem):
+    IDs = [i for i in averaged if i[0].startswith(gene_stem)]
+    IDs = natsort.natsorted(IDs)
+    sIDs = [i for i in ses if i[0].startswith(gene_stem)]
+    sIDs = natsort.natsorted(sIDs)
+    expression_data = np.zeros((len(IDs),4)).astype('object')
+    se_data = expression_data.copy()
+    for index,row in enumerate(IDs):
+        expression_data[index,:] = list(row)
+    for index,row in enumerate(sIDs):
+        se_data[index,:] = list(row)
+    #expression_data = natsort.natsorted(expression_data)
+    return expression_data, se_data
+
+####
+expression_DA,se_DA = subset_database(genes_DA)
+#diff = expression_DRD[:,1:]/np.max(expression_data[:,1:],axis=0)
+####
+expression_ACH,se_ACH = subset_database(genes_ACH)
+expression_mACH,se_mACH = subset_database(genes_mACH)
+####
+expression_OP,se_OP = subset_database(genes_OP)
+##
+exp_DARP = subset_database(genes_DARP)
+def plot_level(expression,title,ylim=[0,10]):
+    days = {
+        "d0": expression[:,1],
+        "d25":expression[:,2], 
+        "d65": expression[:,3],
+    }
+    bottom = np.zeros(len(expression)).astype("object")
+    width = 0.5
+    color = ["red","orange","pink"]
+    i=0
+    if len(expression) > 20:
+        plt.figure(figsize=(25,15))        
+    else:
+        plt.figure(figsize=(20,15))
+    for boolean, day_count in days.items():
+        plt.bar(np.arange(0,len(expression[:,0]),1), day_count, width, label=boolean, bottom=bottom,color=color[i])
+        #plt.errorbar(np.arange(0,len(expression[:,0]),1), day_count, ses[:,i])
+        bottom += day_count
+        #ses += day_count
+        i += 1    
+
+    plt.xticks(np.arange(0,len(expression),1),expression[:,0],rotation=90,fontsize=40)
+    plt.legend(["Day 0","Day 25","Day 65"],fontsize=40)
+    plt.ylabel("Expression level (a.u.)",fontsize=40)
+    plt.xlabel("Transcript",fontsize=40)
+    plt.title(title,fontsize=40)
+    plt.yticks(fontsize=40)
+    plt.ylim(ylim)
+    plt.savefig(title + ".png")
+    #plt.show()
+
+plot_level(expression_OP,"Opioid receptor transcripts",ylim=[0,1])
+plot_level(expression_ACH,"nAChR transcripts",ylim=[0,1])
+plot_level(expression_DA,"DAR transcripts",ylim=[0,3])
+plot_level(expression_mACH,"mAChR transcripts",ylim=[0,2])
+
+expression_DA[np.average(expression_DA[:,1:],axis=1) > np.percentile(np.average(expression_DA[:,1:],axis=1),80),0]
+expression_ACH[np.average(expression_ACH[:,1:],axis=1) > np.percentile(np.average(expression_ACH[:,1:],axis=1),80),0]
+expression_OP[np.average(expression_OP[:,1:],axis=1) > np.percentile(np.average(expression_OP[:,1:],axis=1),80),0]
+expression_mACH[np.average(expression_mACH[:,1:],axis=1) > np.percentile(np.average(expression_mACH[:,1:],axis=1),80),0]
+
+plt.plot(expression_data[:,1:].T)
+plt.ylim([0,5])
+
+DA_dat = averaged[averaged[:,0]]
+DARs = full[]
+
+
+## PCA of neurotransmitter families 
+
+########################################
+### qPCR analysis ###
+import numpy as np
+import os, glob,sys
+import matplotlib.pyplot as plt
+import copy
+import math
+import itertools
+### Ct data ###
+datdir ="/home/caiusgibeily/Documents/Oxdrive/Project_2/qPCR/"
+os.chdir(datdir)
+
+def setup_plate(dims,rows,**kwargs):
+    if "labels" in kwargs: 
+        plate = np.zeros(dims,dtype="object")
+    else:
+        plate = np.zeros(dims)
+    if np.sum(rows) != dims[0]:
+        sys.exit("Row mismatch")
+    pointer = 0
+    
+    for i,num in enumerate(rows):
+        if "labels" in kwargs:    
+            plate[pointer:pointer+num,:] = kwargs["labels"][i]
+        else:
+            plate[pointer:pointer+num,:] = i         
+        pointer += num
+    return plate
+
+
+# Process
+
+## Normalisation (GAPDH)
+def normalise(plate,dat,labels,column=0):
+    #samples = np.unique(plate[:,0])
+    data = copy.copy(dat)
+    ratios = []
+    data[data==0] = 50
+    for i,label in enumerate(labels):
+        ratios.append(np.nanmean(data[plate[:,column]==label,column]))
+    print(ratios)
+    for i,label in enumerate(labels):
+        data[plate==label] = (data[plate==label]/ratios[i])*min(ratios)
+    data[plate=="Control"] = dat[plate=="Control"]
+    return data
+
+def norm_comp(dat1,plate1,col1,dat2,plate2,col2):
+    dat_1 = dat1[:,col1]
+    dat_2 = dat2[:,col2]
+    GAP1 = np.mean(dat_1[plate1[:,col1]!="Control"])
+    GAP2 = np.mean(dat_2[plate2[:,col2]!="Control"])
+    dat2_norm = np.divide(dat2,GAP2)*GAP1
+    diff = np.subtract(dat2,dat2_norm)
+    return diff
+
+### Plot raw Ct data by sample and column
+def jitter(arr, stdev = 0.06):
+    return arr + np.random.randn(len(arr)) * stdev
+
+def plot_samples(ct,plate,**kwargs):
+    samples = np.unique(plate[:,0])
+    plt.figure(figsize=(12,12))
+    for i,label in enumerate(samples):
+        if "column" in kwargs:
+            dat = ct[plate[:,kwargs["column"]]==label,kwargs["column"]]
+
+        else:
+            dat = ct[plate==label]
+        plt.scatter(jitter(np.repeat(i,len(dat))),dat,s=150)
+    plt.ylabel(ylabel="Ct",fontsize="40")
+    plt.xlabel(xlabel="Sample",fontsize="40")
+    plt.xticks(np.arange(0,len(samples),1),samples,fontsize=40)
+    plt.yticks(fontsize=40)
+    #plt.ylim([45,70])
+    plt.ylim([-0.1,40])
+
+plot_samples(ct2,plate)
+def plot_selection(ct,plate,columns):
+    plt.figure(figsize=(12,12))
+    for i,column in enumerate(columns):
+        plot_samples(ct,plate,column=column)
+    plt.show()
+
+#### Quantify ΔCT ####
+factorial = math.factorial
+import itertools
+def ratio(plate,ct,labels):
+    nlabels = len(labels)
+    
+    combs = list(itertools.combinations(range(nlabels-1),2))
+    labcombs = list(itertools.combinations(labels[:-1],2)); labcombs = [list(i) for i in labcombs]
+    
+    ratios = np.zeros((len(ct[0,:]),len(combs)))
+    
+    mean_ct = np.zeros((len(labels),len(ct[0,:])))
+    for i,label in enumerate(labels):
+        mask = (plate[:,0] == label)
+        mean_ct[i,:] = np.nanmean(ct[mask,:],axis=0)
+    mean_ct = mean_ct.T[:,:-1]
+    for i,setc in enumerate(combs):
+        ratios[:,i] = np.log10(np.power(2,-1*np.subtract(mean_ct[:,setc[0]],mean_ct[:,setc[1]]))*10)
+    """
+    for i in range(len(ratios[0,:])):
+        print(ratios[:,i])
+        ratios[ratios[:,i]<1,i]  = -1/ratios[ratios[:,i]<1,i]
+    """
+    return ratios,labcombs,mean_ct
+
+
+import seaborn as sns
+from matplotlib.colors import TwoSlopeNorm, LogNorm
+def plot_heat(ratios,combs,genes,vran=[-2,2],comparison=True,**kwargs):
+    from  matplotlib.colors import LinearSegmentedColormap
+    if comparison:
+        plt.figure(figsize=(12,12))
+        p5 = np.percentile(ratios,5)
+        p95 = np.percentile(ratios,95)
+        print(p5)
+        print(p95)
+        cmap=LinearSegmentedColormap.from_list('rg',["r", "w", "g"], N=256) 
+        norm = TwoSlopeNorm(vmin = vran[0],vcenter=1,vmax=vran[1])
+        
+        mask = np.zeros_like(ratios)
+        mask[np.isnan(ratios)] = True
+        plot = sns.heatmap(ratios, cmap=cmap,linewidth=0.5,norm=norm)
+        plot.set_facecolor('xkcd:gray')
+        plt.xlabel("Comparison",fontsize=40)
+
+        from  matplotlib.colors import LinearSegmentedColormap
+        cbar = plot.collections[0].colorbar
+        # here set the labelsize by 20
+        cbar.ax.tick_params(labelsize=30)
+        plt.yticks(np.arange(0.5,len(genes)+0.5,1),genes,fontsize=40,rotation=0)
+        plt.ylabel("Gene",fontsize=40)
+        plot.collections[0].colorbar.set_label("Log fold expression",fontsize=30)
+        plt.xticks(np.arange(0.5,len(ratios[0,:])+0.5,1),combs,rotation=45,fontsize=30)
+        plt.show()
+    else:
+        plt.figure(figsize=(12,12))
+        plot = sns.heatmap(ratios, cmap='viridis',linewidth=0.5)
+        plt.xlabel("Cell line",fontsize=40)
+        if "labels" in kwargs:
+            plt.xticks(np.arange(0.5,len(ratios[0,:]),1),kwargs["labels"],fontsize=40)
+        else:
+            plt.xticks(fontsize=40)
+        cbar = plot.collections[0].colorbar
+        # here set the labelsize by 20
+        cbar.ax.tick_params(labelsize=30)
+        plot.collections[0].colorbar.set_label("Normalised Ct",fontsize=30)
+        plt.yticks(np.arange(0.5,len(genes)+0.5,1),genes,fontsize=40,rotation=0)
+        plt.ylabel("Gene",fontsize=40)
+    return ratios
+
+import matplotlib.pylab as pl
+
+def diff(plate,ct,labels,column=0):
+    """ 
+    Find the transformation of the reshaped array based on the deflection of the normalised Ct value
+    """
+    ct_norm = normalise(plate,ct,labels,column=column)
+    diff = np.subtract(ct,ct_norm)
+    return diff
+
+a = diff(plate_DA,ct1,labels)
+ct1
+def plot_raw(raw,platindex,plate,genes,return_raw=False,plot=True,normalise=True,**kwargs):
+    plot_array = np.zeros((1,5))
+    if normalise:
+        norm_dat = diff(plate,kwargs["ct"],kwargs["labels"],column=kwargs["column"])
+    if "shift" in kwargs:
+        shift_dat = kwargs["shift"]
+    for j, gene in enumerate(platindex.T):
+        for i, index in enumerate(gene):
+            indices = np.where(gene == index)
+            if len(indices[0]) != 0:
+                label = plate[platindex==index]
+                if normalise:
+                    norm = norm_dat[platindex==index]
+                    if norm == np.nan:
+                        norm = 0
+                    print(norm)
+                if "shift" in kwargs:
+                    shift = shift_dat[platindex==index]
+                    
+                series = len(raw[raw[:,1]==index])
+                temp = np.zeros((series,5)).astype("object")
+                temp[:,0] = np.repeat(genes[j],series)
+                temp[:,1] = np.repeat(label,series)
+                temp[:,2] = raw[raw[:,1] == index,1]
+                if normalise:
+                    temp[:,3] = raw[raw[:,1] == index,2].astype("float32") - norm*100
+                if "shift" in kwargs:
+                    temp[:,3] = raw[raw[:,1] == index,2].astype("float32") + shift   
+
+                else:
+                    temp[:,3] = raw[raw[:,1] == index,2].astype("float32")                    
+                if not return_raw:
+                    temp[:,4] = raw[raw[:,1] == index,5]
+                else:
+                    temp[:,4] = raw[raw[:,1] == index,4]                        
+                plot_array = np.append(plot_array,temp,axis=0)
+    plot_array = plot_array[1:,:]
+
+    if plot:
+        for i,gene in enumerate(genes):
+    
+            plt.figure(figsize=(15,12))
+            for j,cond in enumerate(np.unique(plate)):
+                n = len(np.unique(plate))
+                colour = pl.cm.jet(np.linspace(0,1,n))
+                gene_raw = plot_array[plot_array[:,0] == gene]; condition_raw = gene_raw[gene_raw[:,1] == cond]
+                duplicates = len(np.unique(condition_raw[:,2]))
+                print(condition_raw)
+                condition_raw[condition_raw==''] = 0
+                plot_y = np.reshape(condition_raw[:,4].astype("float32"),(duplicates,len(condition_raw)//duplicates))
+                plot_x = np.reshape(condition_raw[:,3].astype("float32"),(duplicates,len(condition_raw)//duplicates))
+                plt.plot(np.nanmean(plot_x,axis=0),np.nanmean(plot_y,axis=0),color=colour[j],linewidth=5,label=cond)
+            
+            plt.xlabel(xlabel="Cycle",fontsize=40)
+            plt.ylabel(ylabel="Normalised Rn",fontsize=40)
+            plt.legend(title="Line",fontsize=30,title_fontsize=40)
+            plt.xticks(fontsize=40)
+            plt.yticks(fontsize=40)
+            plt.title(i,fontsize=40)
+            plt.show()
+    return plot_array
+
+
+def comp_plot(plot1,plot2,genes):
+    markers = ["--","-","-.",":"]
+    for i,gene in enumerate(genes):
+
+        plt.figure(figsize=(15,12))
+        for j,cond in enumerate(np.unique(plot1[:,1])):
+        
+            gene_raw = plot1[plot1[:,0] == gene]; condition_raw = gene_raw[gene_raw[:,1] == cond]
+            duplicates = len(np.unique(condition_raw[:,2]))
+            condition_raw[condition_raw == ''] = 0
+            plot_y = np.reshape(condition_raw[:,4].astype("float32"),(duplicates,len(condition_raw)//duplicates))
+            plot_x = np.reshape(condition_raw[:,3].astype("float32"),(duplicates,len(condition_raw)//duplicates))
+
+            plt.plot(np.mean(plot_x,axis=0),np.mean(plot_y,axis=0),color="black",linewidth=5,label=cond,linestyle=markers[j])
+        for j,cond in enumerate(np.unique(plot2[:,1])):
+        
+            print(cond)
+            gene_raw = plot2[plot2[:,0] == gene]; condition_raw = gene_raw[gene_raw[:,1] == cond]
+            duplicates = len(np.unique(condition_raw[:,2]))
+            condition_raw[condition_raw == ''] = 0
+            plot_y = np.reshape(condition_raw[:,4].astype("float32"),(duplicates,len(condition_raw)//duplicates))
+
+            plot_x = np.reshape(condition_raw[:,3].astype("float32"),(duplicates,len(condition_raw)//duplicates))
+
+            plt.plot(np.mean(plot_x,axis=0),np.mean(plot_y,axis=0),color="red",linewidth=5,label=cond,linestyle=markers[j])
+        plt.xlabel(xlabel="Cycle",fontsize=40)
+        plt.ylabel(ylabel="Normalised Rn",fontsize=40)
+        plt.legend(title="Line",fontsize=30,title_fontsize=40)
+        plt.xticks(fontsize=40)
+        plt.yticks(fontsize=40)
+        plt.ylim([-0.2,7])
+        plt.xlim([0,40])
+        plt.title(gene,fontsize=40)
+        plt.show()
+        
+comp_plot(msn_plot,da_plot,genes)     
+
+msn_plot = plot_raw(raw_MSNs,index_MSN,plate_MSN,plot=True,normalise=False,genes=genes,ct=ct2,labels=labels,shift=shift_MSN,column=0)
+da_plot = plot_raw(raw_DA,index_DA,plate_DA,plot=True,normalise=True,genes=genes,ct=ct1,labels=labels,column=0)
+plot_heat(mct2,0,False,labels=labels[:-1])
+
+##### DAs
+genes = ["GAPDH","CTIP2","PAX6","DARPP32","TH","D1R","DRD1","DRD2","DRD5","CHRM4","CHRNB2","OPRD","OPRM","A2A","A7"]
+ctdat = "Ct-DAs_20_06_23.csv"
+ctraw = "raw-DAs_20_06_23.csv"
+dims = [11,15]
+ct1 = np.loadtxt(ctdat,delimiter=",",dtype="object")
+ct1[ct1[:,1]=="Undetermined",1] = 0
+index_DA = np.reshape(ct1[:,0],dims).astype("object")
+ct1 = np.reshape(ct1[:,1],dims).astype("float32")
+labels=["65","82","156","Control"]
+
+plate_DA = setup_plate(dims,[3,3,3,2],labels=labels,indices=True)
+# Plot expression data
+ct1 = normalise(plate_DA,ct1,labels)
+ratios,combs,mct1 = ratio(plate_DA,ct1,labels)
+plot_heat(ratios,combs,vran=[0,2],genes=genes)
+plot_heat(mct1,0,comparison=False,labels=labels[:-1],genes=genes)
+# Plot raw data
+raw_DA = np.loadtxt(ctraw,delimiter=",",dtype="object")[1:,:]
+
+### MSNs
+genes = np.array(["GAPDH","CTIP2","PAX6","DARPP32","TH","D1R","DRD1","DRD2","DRD5","CHRM4","CHRNB2","OPRD","OPRM","A2A"])
+ctdat = "Ct-MSNs_18_06_23.csv"
+ctraw = "raw-MSNs_18_06_23.csv"
+dims = [10,14]
+ct2 = np.loadtxt(ctdat,delimiter=",",dtype="object")
+plate_MSN = setup_plate(dims,[3,3,3,1],labels=["D20","D30","D40","Control"])
+
+ct2[ct2[:,1]=="Undetermined",1] = 0
+index_MSN = np.reshape(ct2[:,0],dims).astype("object")
+ct2 = np.reshape(ct2[:,1],dims).astype("float32")
+labels=["D20","D30","D40","Control"]
+ct2[0,0] = ct2[2,0]; ct2[1,0] = ct2[2,0]
+ct2 = normalise(plate_MSN,ct2,labels,column=0); 
+ratios,combs,mct2 = ratio(plate_MSN,ct2_norm,labels)
+plot_heat(ratios,combs,vran=[0,2],genes=genes)
+plot_heat(mct2,0,comparison=False,labels=labels[:-1],genes=genes)
+#
+shift_MSN = norm_comp(ct1,plate_DA,0,ct2,plate_MSN,0)
+ct2 -= shift_MSN
+##
+# Plot raw data
+raw_MSNs = np.loadtxt(ctraw,delimiter=",",dtype="object")[1:,:]
+
+
+
+np.savetxt("ct1.csv",ct1,delimiter=",")
+np.savetxt("ct2.csv",ct2,delimiter=",")
+
+## Comparison # ΔΔCt method
+def ref_baseline(data,column=0):
+    dat = data.copy()
+    v = dat[:,column].copy()
+    print(v)
+    for i,row in enumerate(dat.T):
+        dat[:,i] = np.subtract(row,v)
+        print(v)
+    dat = np.delete(dat,column,1)
+    return dat
+ref_ct1 = ref_baseline(ct1,column=0)
+ref_ct2 = ref_baseline(ct2,column=0)
+
+ref1_av =np.average(ref_ct1[:-2,:-1],axis=0)
+ref2_av =np.average(ref_ct2[:-1,:],axis=0)
+comparison = np.log10(np.power(2,-1*np.subtract(ref1_av,ref2_av))*10) - 1
+
+c1_norm,ct2_norm = norm_comp(ct1,ct2,0,0)
+
+plt.figure(figsize=(12,12))
+for i in range(len(comparison)):
+    if comparison[i] < 1:
+        colour = "r"
+    else:
+        colour = "g"
+    plt.bar(i,comparison[i],color=colour)
+plt.xticks(np.arange(0,i+1,1),genes[1:14],rotation=90,fontsize=40)
+plt.yticks(fontsize=40)
+plt.xlabel("Gene",fontsize=40)
+plt.ylabel("Log expression ($ΔΔCt_{GAPDH-Gene}$)",fontsize=40)
+    
+    
+###
+# Cmparison
+#### MSN-STR-CTX plate
+genes = ["GAPDH","CTIP2","PAX6","DARPP32","TH","D1R","DRD1","DRD2","DRD5","CHRM4","CHRNB2","OPRD","OPRM","A2A","A7"]
+ctdat = "Ct-MSN-STR-CTX_19_07_23.csv"
+ctraw = "raw-MSN-STR-CTX_19_07_23.csv"
+dims = [7,15]
+ctc = np.loadtxt(ctdat,delimiter=",",dtype="object")
+ctc[ctc[:,1]=="Undetermined",1] = 0
+index_ctc = np.reshape(ctc[:,0],dims).astype("object")
+ctc = np.reshape(ctc[:,1],dims).astype("float32")
+labels=["MSN","STR","CTX","Control"]
+
+plate_ctc = setup_plate(dims,[2,2,2,1],labels=labels,indices=True)
+ctc = np.delete(ctc.T,4,0).T
+ctc[ctc==0] =np.nan
+plate_ctc = np.delete(plate_ctc.T,4,0).T
+plate_ctc[plate_ctc==0] =np.nan
+index_ctc = np.delete(index_ctc.T,4,0).T
+index_ctc[index_ctc==0] =np.nan
+
+
+# Plot expression data
+ctc = normalise(plate_ctc,ctc,labels)
+ratios,combs,mct1 = ratio(plate_ctc,ctc,labels)
+plot_heat(ratios,combs,vran=[-2,4],genes=genes)
+plot_heat(mct1,0,comparison=False,labels=labels[:-1],genes=genes)
+# Plot raw data
+raw_DA = np.loadtxt(ctraw,delimiter=",",dtype="object")[1:,:]
+
+plate = setup_plate([7,14], [2,2,2,1],labels=["MSN","STR","CTX","Control"])
+ct_control = np.loadtext()
+
+raw_ctc = np.loadtxt(ctraw,delimiter=",",dtype="object")[1:,:]
+msn_plot = plot_raw(raw_ctc,index_ctc,plate_ctc,plot=True,normalise=True,genes=genes,ct=ctc,labels=labels,column=0)
